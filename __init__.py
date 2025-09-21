@@ -17,7 +17,7 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Blinn AI",
+    "name": "Blinn AI: Automate Blender with AI",
     "author": "Soumya Ranjan Sahu",
     "maintainer": "Soumya Ranjan Sahu",
     "version": (0, 1, 0),
@@ -29,9 +29,24 @@ bl_info = {
 }
 
 import bpy
-from bpy.types import Operator, Panel, AddonPreferences
-from bpy.props import StringProperty, BoolProperty
+from bpy.types import Operator, Panel, AddonPreferences, PropertyGroup
+from bpy.props import StringProperty, BoolProperty, CollectionProperty, PointerProperty
 from .auth import login, logout
+from . import ui_panels
+
+
+class BlinnAIChatProperties(PropertyGroup):
+    """Properties for chat input."""
+    input_text: StringProperty(
+        name="Chat Input",
+        description="Enter your message here",
+        default=""
+    )
+
+class ChatMessage(PropertyGroup):
+    """Represents a single chat message."""
+    text: StringProperty(name="Text", default="")
+    is_user: BoolProperty(name="Is User", default=False)
 
 class BlinnAI_Preferences(AddonPreferences):
     bl_idname = __name__
@@ -50,7 +65,7 @@ class BlinnAI_Preferences(AddonPreferences):
     keep_preferences: BoolProperty(
         name="Keep Preferences",
         description="Retain add-on preferences after disabling",
-        default=True
+        default=True,
     )
 
     def draw(self, context):
@@ -65,50 +80,59 @@ class BlinnAI_Preferences(AddonPreferences):
             )
         else:
             layout.operator("blinnai.signout", text="Sign Out", icon="URL")
-        
+
         layout.prop(self, "api_key", text="Your API Key", emboss=True)
         if self.api_key:
             layout.operator("blinnai.clear_key", text="Clear", icon="X")
-        
+
         layout.prop(self, "keep_preferences")
+
 
 class BLINN_SIGNIN_OT_manual_signin(Operator):
     bl_idname = "blinnai.manual_signin"
     bl_label = "Sign In"
     bl_description = "Open browser for authentication"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         from .auth import login
+
         login(signup=False)  # Open login page
-        self.report({'INFO'}, "Browser opened for sign-in. Complete authentication and return here.")
-        return {'FINISHED'}
+        self.report(
+            {"INFO"},
+            "Browser opened for sign-in. Complete authentication and return here.",
+        )
+        return {"FINISHED"}
+
 
 class BLINN_SIGNOUT_OT_signout(Operator):
     bl_idname = "blinnai.signout"
     bl_label = "Sign Out"
     bl_description = "Sign out and clear API key"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         from .auth import logout
+
         logout()
-        self.report({'INFO'}, "Signed out successfully.")
-        return {'FINISHED'}
+        self.report({"INFO"}, "Signed out successfully.")
+        return {"FINISHED"}
+
 
 class BLINN_CLEAR_OT_clear_key(Operator):
     bl_idname = "blinnai.clear_key"
     bl_label = "Clear Key"
     bl_description = "Clear the API key"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        context.preferences.addons[__name__].preferences.api_key = ""
-        self.report({'INFO'}, "API key cleared.")
-        return {'FINISHED'}
+        context.preferences.addons[__package__].preferences.api_key = ""
+        self.report({"INFO"}, "API key cleared.")
+        return {"FINISHED"}
+
 
 class BLINN_PT_main_panel(Panel):
-    bl_label = "BlinnAI"
+    bl_label = "Blinn AI Login"
     bl_idname = "BLINN_PT_main"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -116,7 +140,7 @@ class BLINN_PT_main_panel(Panel):
 
     def draw(self, context):
         layout = self.layout
-        prefs = context.preferences.addons[__name__].preferences
+        prefs = context.preferences.addons[__package__].preferences
 
         if not prefs.api_key:
             layout.label(text="Not logged in")
@@ -128,28 +152,47 @@ class BLINN_PT_main_panel(Panel):
             layout.label(text=f"Key: {prefs.api_key[:10]}...")
             layout.operator("wm.blinnai_logout", text="Logout")
 
+        layout.separator()
+        ui_panels.draw_chat_ui(layout, context)
+
 
 classes = ()
 
 
 def register():
     from .auth import classes as oauth_classes
+    from .ui_panels import classes as ui_classes
 
     global classes
-    classes = oauth_classes + (
-        BlinnAI_Preferences,
-        BLINN_SIGNIN_OT_manual_signin,
-        BLINN_SIGNOUT_OT_signout,
-        BLINN_CLEAR_OT_clear_key,
-        BLINN_PT_main_panel,
+    classes = (
+        oauth_classes
+        + ui_classes
+        + (
+            BlinnAI_Preferences,
+            BLINN_SIGNIN_OT_manual_signin,
+            BLINN_SIGNOUT_OT_signout,
+            BLINN_CLEAR_OT_clear_key,
+            BLINN_PT_main_panel,
+            ChatMessage,
+            BlinnAIChatProperties
+        )
     )
     for cls in classes:
         bpy.utils.register_class(cls)
+    
+    bpy.types.Scene.blinnai_messages = CollectionProperty(type=ChatMessage)
+    bpy.types.Scene.blinnai_chat_props = PointerProperty(
+        type=BlinnAIChatProperties,
+        name="BlinnAI Chat Properties",
+        description="Properties for chat input"
+    )
 
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.blinnai_messages
+    del bpy.types.Scene.blinnai_chat_props
 
 
 if __name__ == "__main__":
