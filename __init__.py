@@ -1,21 +1,3 @@
-# ##### BEGIN GPL LICENSE BLOCK #####
-#
-#  This program is free software; you can redistribute it and/or
-#  modify it under the terms of the GNU General Public License
-#  as published by the Free Software Foundation; either version 2
-#  of the License, or (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#
-#  You should have received a copy of the GNU General Public License
-#  along with this program; if you have not received it, write to the Free Software Foundation,
-#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
-#
-# ##### END GPL LICENSE BLOCK #####
-
 bl_info = {
     "name": "Blinn AI: Automate Blender with AI",
     "author": "Soumya Ranjan Sahu",
@@ -47,6 +29,7 @@ class ChatMessage(PropertyGroup):
     """Represents a single chat message."""
     text: StringProperty(name="Text", default="")
     is_user: BoolProperty(name="Is User", default=False)
+    is_status: BoolProperty(name="Is Status", default=False)
 
 class BlinnAI_Preferences(AddonPreferences):
     bl_idname = __name__
@@ -162,8 +145,8 @@ classes = ()
 def register():
     from .auth import classes as oauth_classes
     from .ui_panels import classes as ui_classes
-
     global classes
+
     classes = (
         oauth_classes
         + ui_classes
