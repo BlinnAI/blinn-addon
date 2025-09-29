@@ -24,6 +24,16 @@ class BlinnAIChatProperties(PropertyGroup):
         description="Enter your message here",
         default=""
     )
+    is_loading_conversation: BoolProperty(
+        name="Loading Conversation",
+        description="Indicates if conversation is being loaded from API",
+        default=False
+    )
+    has_loaded_conversation: BoolProperty(
+        name="Has Loaded Conversation",
+        description="Indicates if conversation has been loaded for this session",
+        default=False
+    )
 
 class ChatMessage(PropertyGroup):
     """Represents a single chat message."""
@@ -169,6 +179,8 @@ def register():
         name="BlinnAI Chat Properties",
         description="Properties for chat input"
     )
+    #bpy.ops.blinnai.load_conversation()
+    #bpy.app.timers.register(lambda: delayed_load_conversation(bpy.context), first_interval=1.0)
 
 
 def unregister():
