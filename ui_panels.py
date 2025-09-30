@@ -8,6 +8,7 @@ import threading
 import tempfile
 import logging
 from datetime import datetime
+from .utils import clean_script
 
 bk_logger = logging.getLogger(__name__)
 
@@ -129,9 +130,10 @@ class BLINN_CHAT_OT_send_message(Operator):
                         if self.status_msg_index is not None:
                             scene.blinnai_messages.remove(self.status_msg_index)
                             self.status_msg_index = None
-                        script = data.get("script")
-                        if script:
+                        raw_script = data.get("script")
+                        if raw_script:
                             try:
+                                script = clean_script(raw_script)
                                 with tempfile.NamedTemporaryFile(
                                     mode="w", suffix=".py", delete=False
                                 ) as temp_file:
@@ -188,31 +190,35 @@ class BLINN_CHAT_OT_send_message(Operator):
 def draw_chat_ui(layout, context):
     """Draw the chat UI with message bubbles and input bar."""
     scene = context.scene
-    chat_props = scene.blinnai_messages
+    chat_props = scene.blinnai_chat_props
     prefs = context.preferences.addons[__package__].preferences
 
-    # Chat area (scrollable-like)
-    box = layout.box()
-
-    # Load previous chats button
-    row = box.row(align=True)
-    row.alignment = "CENTER"
-    row.enabled = not scene.blinnai_chat_props.is_loading_conversation
-    row.operator("blinnai.load_conversation", text="Load previous chats")
-
+    #if not chat_props.has_loaded_conversation:
+    #    row = layout.row(align=True)
+    #    row.alignment = "CENTER"
+    #    row.enabled = not chat_props.is_loading_conversation
+    #    row.operator("blinnai.load_conversation", text="Load previous chats")
+    
     # Project name
     project_name = (
         "Untitled"
         if not bpy.data.filepath
         else os.path.splitext(os.path.basename(bpy.data.filepath))[0]
     )
-    row = box.row(align=True)
+    row = layout.row(align=True)
     row.alignment = "CENTER"
     row.label(text=f"Project {project_name}")
+
+    # Chat area (scrollable-like)
+    box = layout.box()
 
     if not prefs.api_key:
         box.label(text="Please sign in to use the chat.", icon="ERROR")
         return
+    
+    #row = box.row(align=True)
+    #row.alignment = "CENTER"
+    #row.label(text=f"Project {project_name}")
 
     # Message display
     for msg in scene.blinnai_messages:

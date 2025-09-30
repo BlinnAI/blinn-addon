@@ -29,11 +29,11 @@ class BlinnAIChatProperties(PropertyGroup):
         description="Indicates if conversation is being loaded from API",
         default=False
     )
-    has_loaded_conversation: BoolProperty(
-        name="Has Loaded Conversation",
-        description="Indicates if conversation has been loaded for this session",
-        default=False
-    )
+    #has_loaded_conversation: BoolProperty(
+    #    name="Has Loaded Conversation",
+    #    description="Indicates if conversation has been loaded for this session",
+    #    default=False
+    #)
 
 class ChatMessage(PropertyGroup):
     """Represents a single chat message."""
