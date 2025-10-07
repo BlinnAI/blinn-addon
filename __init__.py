@@ -24,20 +24,26 @@ class BlinnAIChatProperties(PropertyGroup):
         description="Enter your message here",
         default=""
     )
+    is_ai_pending: BoolProperty(
+        name="Is AI Pending",
+        description="is ai pending",
+        default=False
+    )
+    is_executing_script: BoolProperty(
+        name="Is Executing Script",
+        description="is executing script",
+        default=False
+    )
     is_loading_conversation: BoolProperty(
         name="Loading Conversation",
         description="Indicates if conversation is being loaded from API",
         default=False
     )
-    #has_loaded_conversation: BoolProperty(
-    #    name="Has Loaded Conversation",
-    #    description="Indicates if conversation has been loaded for this session",
-    #    default=False
-    #)
 
 class ChatMessage(PropertyGroup):
     """Represents a single chat message."""
     text: StringProperty(name="Text", default="")
+    script: StringProperty(name="Script", default="")
     is_user: BoolProperty(name="Is User", default=False)
     is_status: BoolProperty(name="Is Status", default=False)
 
