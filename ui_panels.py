@@ -3,7 +3,9 @@ import bpy
 from bpy.types import Operator
 import json
 import requests
+import asyncio
 import queue
+import textwrap
 import threading
 import tempfile
 import logging
@@ -13,11 +15,56 @@ from .utils import clean_script
 bk_logger = logging.getLogger(__name__)
 
 
+class BLINN_CHAT_OT_execute_script(Operator):
+    bl_idname = "blinnai.execute_script"
+    bl_label = "Execute AI Script"
+    bl_description = "Execute the AI-generated script"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        scene = context.scene
+        chat_props = scene.blinnai_chat_props
+
+        if not scene.blinnai_messages:
+            return {"FINISHED"}
+        
+        message = scene.blinnai_messages[-1]
+        if len(message.script) == 0:
+            return {"FINISHED"}
+        
+        temp_file_path = None
+
+        try:
+            script = clean_script(message.script)
+            chat_props.is_executing_script = True
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as temp_file:
+                temp_file.write(script)
+                temp_file_path = temp_file.name
+            bpy.ops.script.python_file_run(filepath=temp_file_path)
+        except Exception as e:
+            self.report({'ERROR'}, f"Script execution failed: {str(e)}")
+        finally:
+            chat_props.is_executing_script = False
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    print(f"Failed to delete temp file: {str(e)}")
+        
+        return {"FINISHED"}
+
 class BLINN_CHAT_OT_send_message(Operator):
     bl_idname = "blinnai.send_message"
     bl_label = "Send Message"
     bl_description = "Send the chat message"
     bl_options = {"REGISTER", "UNDO"}
+
+    _timer = None
+    _loop = None
+    _token_queue = None
+    _stream_done = False
+    _area = None
+    response_text_index = None
 
     def execute(self, context):
         scene = context.scene
@@ -41,150 +88,107 @@ class BLINN_CHAT_OT_send_message(Operator):
         if not prefs.api_key:
             self.report({"ERROR"}, "No API key found. Please sign in.")
             return {"CANCELLED"}
+        
+        chat_props.is_ai_pending = True
 
-        # Initialize status message
-        status_msg = scene.blinnai_messages.add()
-        self.status_msg_index = len(scene.blinnai_messages) - 1
+        # Initialize response text (Add ai response)
+        scene.blinnai_messages.add()
+        self.response_text_index = len(scene.blinnai_messages) - 1
 
-        # Send requets to stream response
-        try:
-            headers = {"Authorization": f"Bearer {prefs.api_key}"}
-            self.response = requests.post(
-                "http://localhost:8888/api/v1/conversation",
-                json={
-                    "content": message,
-                },
-                headers=headers,
-                stream=True,
-            )
-            self.response.raise_for_status()
-            self.queue = queue.Queue()
-            self.temp_file_path = None
-            self.running = True
+        self._token_queue = queue.Queue()
+        self._stream_done = False
+        self._area = context.area
 
-            # Start background thread for stream processing
-            self.thread = threading.Thread(target=self.stream_processor, daemon=True)
-            self.thread.start()
+        # Payload for POST
+        #scene_context = get_sc
+        payload = {"content": message}
 
-            # Start timer for non-blocking processing
-            context.window_manager.modal_handler_add(self)
-            self._timer = context.window_manager.event_timer_add(
-                0.05, window=context.window
-            )
-            context.area.tag_redraw()
-            return {"RUNNING_MODAL"}
-
-        except requests.RequestException as e:
-            self.report({"ERROR"}, f"Failed to connect to API: {str(e)}")
-            return {"CANCELLED"}
-
-    def stream_processor(self):
-        try:
-            for line in self.response.iter_lines():
-                if line and self.running:
-                    decoded_line = line.decode("utf-8")
-                    if decoded_line.startswith("data: "):
-                        try:
-                            data = json.loads(decoded_line[6:])
-                            self.queue.put(data)
-                        except json.JSONDecodeError as e:
-                            self.queue.put(
-                                {
-                                    "status": "Error",
-                                    "error": f"Invalid response format: {str(e)}",
-                                }
-                            )
-            self.queue.put(None)  # Signal end of stream
-        except requests.RequestException as e:
-            self.queue.put({"status": "Error", "error": str(e)})
-        except e:
-            self.queue.put({"status": "Error", "error": str(e)})
-        finally:
-            self.queue.put(None)  # Signal end of stream
+        async def fetch_stream():
+            try:
+                with requests.Session() as session:
+                    with session.post("http://localhost:8888/api/v1/conversation", json=payload, stream=True) as resp:
+                        if resp.status_code == 200:
+                            for chunk in resp.iter_content(chunk_size=1024):
+                                if chunk:
+                                    if self.response_text_index is not None:
+                                        buffer = chunk.decode('utf-8', errors='replace')
+                                        segments=buffer.split('\u001F')
+                                        for json_str in segments:
+                                            if json_str.strip():
+                                                try:
+                                                    data=json.loads(json_str.strip())
+                                                    if isinstance(data, dict) and 'status' in data and 'token' in data:
+                                                        self._token_queue.put(data)
+                                                except json.JSONDecodeError:
+                                                    continue
+                        else:
+                            self._token_queue.put({'status': 'error', 'token': f"Error: HTTP {resp.status_code}\n"})
+            except Exception as e:
+                self._token_queue.put({'status': 'error', 'token': f"Exception: {str(e)}\n"})
+            finally:
+                self._token_queue.put({'status': 'done', 'token': None})
+        
+        def run_async_fetch():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(fetch_stream())
+            self._loop.close()
+        
+        thread = threading.Thread(target=run_async_fetch, daemon=True)
+        thread.start()
+        
+        self._timer = context.window_manager.event_timer_add(0.1, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-        if event.type == "TIMER" and self.running:
+        if event.type == 'TIMER':
             scene = context.scene
-            try:
-                while not self.queue.empty():
-                    data = self.queue.get_nowait()
-                    if data is None:
-                        if self.status_msg_index is not None:
-                            scene.blinnai_messages.remove(self.status_msg_index)
-                            self.status_msg_index = None
+            chat_props = scene.blinnai_chat_props
+            updated = False
 
-                        self.cleanup(context)
-                        return {"FINISHED"}
+            while not self._token_queue.empty():
+                data = self._token_queue.get()
+                status = data['status']
 
-                    if data.get("status") == "Error":
-                        self.report(
-                            {"ERROR"},
-                            f"API Error: {data.get('error', 'Unknown error')}",
-                        )
-                        if self.status_msg_index is not None:
-                            scene.blinnai_messages.remove(self.status_msg_index)
-                            self.status_msg_index = None
-                        self.cleanup(context)
-                        return {"FINISHED"}
-                    elif data.get("status") == "Complete":
-                        if self.status_msg_index is not None:
-                            scene.blinnai_messages.remove(self.status_msg_index)
-                            self.status_msg_index = None
-                        raw_script = data.get("script")
-                        if raw_script:
-                            try:
-                                script = clean_script(raw_script)
-                                with tempfile.NamedTemporaryFile(
-                                    mode="w", suffix=".py", delete=False
-                                ) as temp_file:
-                                    temp_file.write(script)
-                                    self.temp_file_path = temp_file.name
-                                bpy.ops.script.python_file_run(
-                                    filepath=self.temp_file_path
-                                )
-                            except Exception as e:
-                                self.report(
-                                    {"ERROR"}, f"Script execution failed: {str(e)}"
-                                )
-                        explanation = data.get("explaination")
-                        if explanation:
-                            ai_msg = scene.blinnai_messages.add()
-                            ai_msg.text = explanation
-                            ai_msg.is_user = False
-                        # projectId = data.get("projectId")
-                        # if projectId:
-                        #    # save project Id unless until user is working on current project in blender or loads the same project file
+                if status == 'error' and self.response_text_index is not None:
+                    scene.blinnai_messages[self.response_text_index].text += data['token']
+                    updated = True
+                elif status == 'done':
+                    self._stream_done = True
+                elif self.response_text_index is not None:
+                    token = data['token']
+                    if status == "Planning":
+                        scene.blinnai_messages[self.response_text_index].text += token
+                        updated = True
+                    elif status == "Answering":
+                        scene.blinnai_messages[self.response_text_index].text += token
+                        updated = True
+                    elif status == "Generating":
+                        scene.blinnai_messages[self.response_text_index].script += token
 
-                        self.cleanup(context)
-                        context.area.tag_redraw()
-                        return {"FINISHED"}
-                    else:
-                        if self.status_msg_index is not None:
-                            scene.blinnai_messages[self.status_msg_index].text = (
-                                data.get("status", "")
-                            )
-                            context.area.tag_redraw()
+            # Redraw UI if tokens were added
+            if updated and self._area:
+                self._area.tag_redraw()
+            
+            # Check if stream is done
+            if self._stream_done and self._token_queue.empty():
+                chat_props.is_ai_pending = False
+                if self._timer:
+                    context.window_manager.event_timer_remove(self._timer)
+                    self._timer = None
+                if self.response_text_index is not None and len(scene.blinnai_messages[self.response_text_index].script) > 0:
+                    bpy.ops.blinnai.execute_script()
+                return {'FINISHED'}
 
-            except Exception as e:
-                self.report({"ERROR"}, f"Stream error: {str(e)}")
-                if self.status_msg_index is not None:
-                    scene.blinnai_messages.remove(self.status_msg_index)
-                    self.status_msg_index = None
-                self.cleanup(context)
-                return {"FINISHED"}
+        return {'PASS_THROUGH'}
 
-            return {"RUNNING_MODAL"}
-
-        return {"RUNNING_MODAL"}
-
-    def cleanup(self, context):
-        if hasattr(self, "response"):
-            self.response.close()
-        if self.temp_file_path and os.path.exists(self.temp_file_path):
-            os.unlink(self.temp_file_path)
-        if hasattr(self, "_timer"):
+    def cancel(self, context):
+        context.scene.blinnai_chat_props.is_ai_pending = False
+        context.scene.blinnai_chat_props.is_executing_script = False
+        if self._timer:
             context.window_manager.event_timer_remove(self._timer)
-        self.running = False
+            self._timer = None
 
 
 def draw_chat_ui(layout, context):
@@ -192,13 +196,7 @@ def draw_chat_ui(layout, context):
     scene = context.scene
     chat_props = scene.blinnai_chat_props
     prefs = context.preferences.addons[__package__].preferences
-
-    #if not chat_props.has_loaded_conversation:
-    #    row = layout.row(align=True)
-    #    row.alignment = "CENTER"
-    #    row.enabled = not chat_props.is_loading_conversation
-    #    row.operator("blinnai.load_conversation", text="Load previous chats")
-    
+   
     # Project name
     project_name = (
         "Untitled"
@@ -215,26 +213,34 @@ def draw_chat_ui(layout, context):
     if not prefs.api_key:
         box.label(text="Please sign in to use the chat.", icon="ERROR")
         return
-    
-    #row = box.row(align=True)
-    #row.alignment = "CENTER"
-    #row.label(text=f"Project {project_name}")
 
     # Message display
     for msg in scene.blinnai_messages:
-        row = box.row(align=True)
-        if msg.is_user:
-            row.alignment = "RIGHT"
-            row.label(text=f"You: {msg.text}")
-        else:
-            row.alignment = "LEFT"
-            row.label(text=f"Blinn: {msg.text}" if not msg.is_status else msg.text)
+        col = box.column(align=True)
+        col.alignment = 'RIGHT' if msg.is_user else 'LEFT'
+
+        display_text = f"You: {msg.text}" if msg.is_user else (f"Blinn: {msg.text}" if not msg.is_status else msg.text)
+
+        lines = display_text.split('\n')
+
+        max_width = 80
+
+        for line in lines:
+            wrapped_lines = textwrap.wrap(line, width=max_width, break_long_words=True)
+            if not wrapped_lines:
+                wrapped_lines = [line]
+            for wrapped_line in wrapped_lines:
+                col.label(text=wrapped_line)
+        
+        if len(msg.script):
+            box = layout.box()
+            col = box.column(align=True)
+            col.alignment = 'CENTER'
+            # handle executing too
 
     # Input bar and send button
     row = layout.row(align=True)
-    row.enabled = (
-        not scene.blinnai_chat_props.is_loading_conversation
-    )  # Fixed: Use row.enabled
+    row.enabled = not (chat_props.is_ai_pending or chat_props.is_executing_script)
     row.prop(scene.blinnai_chat_props, "input_text", text="", emboss=True)
     row.operator("blinnai.send_message", text="", icon="PLAY", emboss=True)
 
@@ -395,6 +401,9 @@ class BLINN_CHAT_OT_load_conversation(Operator):
 
 
 classes = (
-    BLINN_CHAT_OT_load_conversation,
+    BLINN_CHAT_OT_execute_script,
     BLINN_CHAT_OT_send_message,
+    BLINN_CHAT_OT_load_conversation,
 )
+
+## User can link the ai to various assets or other addons
